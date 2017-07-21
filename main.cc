@@ -19,12 +19,14 @@
 class net{
     public:
         int port;
-        char * ip;
-        net(char *ip, int port):ip(ip), port(port){};
+        const char * ip;
+        int (*callback)(unsigned char * buf, int leng);
+        net(const char *ip, int port, int (*callback)(unsigned char *buf, int leng)):ip(ip), port(port), callback(callback){};
         ~net(){};
         int start_service();
     private:
         int fd;
+        int socketfd;
         int epoll_fd;
         int printf_t(unsigned char *buf, size_t len);
         int RecvFrame(int fd, int *close_fd);
@@ -32,6 +34,7 @@ class net{
         void Disconnected(int client_sock);
         void recv_poress(void);
         int init_socket(unsigned int port);
+        int net_accept();
 };
 
 int net::printf_t(unsigned char *buf, size_t len)
@@ -82,17 +85,16 @@ int net::RecvFrame(int fd, int *close_fd)
                 return 1;
             }
         }
-        
-        printf_t(buff, count);
+        callback(buff, count);
         if(count == MAX_READ_FRAME)
         {
             printf("接收帧数据超过最大值\n");
             rs = 1;
         }
-        else
-        {
-            rs = 0;
-        }
+//        else
+//        {
+//            rs = 0;
+//        }
     }
 }
 
@@ -136,11 +138,19 @@ void net::recv_poress(void)
     while(1)
     {
         maxfds = -1;
+        printf("epoll_wait start \n");
         maxfds = epoll_wait(epoll_fd, eventstmp, MAX_EPOLL_NUM, -1);
+        printf("epoll_wait stop\n");
         for(i = 0; i < maxfds; ++i)
         {
             client_sock = eventstmp[i].data.fd;
-            if(eventstmp[i].events & EPOLLIN)
+            if(client_sock == socketfd)
+            {
+              //新连接
+              printf("new client!\n");
+              net_accept();
+            }
+            else if(eventstmp[i].events & EPOLLIN)
             {
                 printf("接收 数据\n");
                 ret = RecvFrame(client_sock, &close_fd);
@@ -195,27 +205,67 @@ int net::init_socket(unsigned int port)
     
     return socketfd;
 }
+
+int net::net_accept()
+{
+
+    struct epoll_event ev_reg; 
+    unsigned int clilen;
+    int clifd;
+    struct sockaddr_in cliaddr;
+    //while(1)
+   // {
+        clilen = sizeof(cliaddr);
+        clifd = accept(socketfd, (sockaddr *)&cliaddr, &clilen);
+        if (clifd < 0 && errno == EINTR)
+        {
+        //    continue;
+        }
+        else if(clifd < 0)
+        {
+            printf(" net server accept error !");
+      //      break;
+        }
+        printf("new client clifd:%d\n", clifd);
+        ev_reg.data.fd = clifd;
+        ev_reg.events = EPOLLPRI| EPOLLIN |EPOLLET | EPOLLERR |EPOLLHUP;
+        if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, clifd, &ev_reg) < 0)
+        {
+            printf(" server add client to epoll ctl failed. clifd:", clifd);
+     //       continue;
+        }
+    //}
+}
 int net::start_service()
 {
     int ret = 0;
     pthread_t recv_poress_fd;
     epoll_fd = epoll_create(100);
     struct epoll_event ev_reg; 
-    int socketfd = init_socket(port);
+    socketfd = init_socket(port);
     if (0 >= socketfd)
     {
         printf(" init socket faile! \n");
         return -1;
     }
     printf("init socket succ socketfd:%d\n", socketfd);
-
-    ret = pthread_create(&recv_poress_fd, NULL, (void*)recv_poress, NULL);
-    if(ret < 0)
-    {
-        printf("pthread create faile \n");
-        exit(1);
-    }
     
+    ev_reg.data.fd = socketfd;
+    ev_reg.events = EPOLLPRI| EPOLLIN |EPOLLET | EPOLLERR |EPOLLHUP;
+    if(epoll_ctl(epoll_fd, EPOLL_CTL_ADD, socketfd, &ev_reg) < 0)
+    {
+        printf(" server add client to epoll ctl failed. clifd:", socketfd);
+    }
+    recv_poress();
+    return 0;
+
+//    ret = pthread_create(&recv_poress_fd, NULL, (void*)recv_poress, NULL);
+//    if(ret < 0)
+//    {
+//        printf("pthread create faile \n");
+//        exit(1);
+//    }
+/*    
     int clilen;
     int clifd;
     struct sockaddr_in cliaddr;
@@ -239,12 +289,22 @@ int net::start_service()
             printf(" server add client to epoll ctl failed. clifd:", clifd);
             continue;
         }
+    }*/
+}
+int read_back(unsigned char *buf, int len)
+{
+    int i = 0;
+    printf("..........\n");
+    for(i = 0; i < len; ++i)
+    {
+        printf("%x ", buf[i]);
     }
+    printf("----------\n");
 }
 
 int main(int argc, char *argv[])
 {
-    net net("127.0.0.1", 8899);
+    net net("127.0.0.1", 8899, read_back);
 
     net.start_service();
     return 0;
